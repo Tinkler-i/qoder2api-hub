@@ -123,11 +123,11 @@ jobs:
 
       - name: 应用本地 Dockerfile 补丁（glibc 基础镜像）
         run: |
-          if [ -f fork/ci/Dockerfile ]; then
+          if [ -f fork/ci/Dockerfile ] && [ -n "${{ env.PATCH_REV }}" ]; then
             cp fork/ci/Dockerfile src/Dockerfile
             echo "==> 已用 fork/ci/Dockerfile 覆盖上游 Dockerfile（Debian slim / glibc）"
           else
-            echo "==> 没有本地补丁，直接使用上游 Dockerfile"
+            echo "==> 未启用本地补丁（PATCH_REV 为空或无 ci/Dockerfile），直接使用上游 Dockerfile"
           fi
 
       - name: 记录上游 commit

@@ -28,9 +28,12 @@ permissions:
   contents: read
 
 env:
-  # 上游仓库。如果你以后想用自己的 fork（改过 Dockerfile）当来源，
-  # 把这行换成：${{ github.repository }}
+  # 上游仓库。如果你以后想用自己的 fork（改过源码）当来源，改成：${{ github.repository }}
   UPSTREAM: shuishuipingan/qoder2api-hub
+  # 本地补丁版本：只要仓库里的 ci/Dockerfile 有实质改动（换基础镜像等）就 +1，
+  # 用来强制重建「同名 release」的镜像（否则会被判定为"已构建过"而跳过）。
+  # 上游自己修好 glibc 问题、删掉 ci/Dockerfile 之后，把它设回 "" 即可。
+  PATCH_REV: "1"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -42,6 +45,7 @@ jobs:
       contents: read
       packages: read
     outputs:
+      ref: ${{ steps.detect.outputs.ref }}
       tag: ${{ steps.detect.outputs.tag }}
       skip: ${{ steps.detect.outputs.skip }}
       image: ${{ steps.detect.outputs.image }}
@@ -52,6 +56,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_REF: ${{ github.event.inputs.ref }}
           FORCE: ${{ inputs.force || false }}
+          PATCH_REV: ${{ env.PATCH_REV }}
         run: |
           set -uo pipefail
           IMAGE="$(echo "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
@@ -59,14 +64,22 @@ jobs:
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
           if [ -n "${INPUT_REF:-}" ]; then
-            TAG="${INPUT_REF}"
-            echo "手动指定 ref：${TAG}"
+            REF="${INPUT_REF}"
+            echo "手动指定 ref：${REF}"
           else
-            TAG="$(curl -fsSL "https://api.github.com/repos/${UPSTREAM}/releases/latest" | jq -r '.tag_name // empty')"
-            echo "上游最新 release：${TAG:-（取不到，回退 main）}"
-            TAG="${TAG:-main}"
+            REF="$(curl -fsSL "https://api.github.com/repos/${UPSTREAM}/releases/latest" | jq -r '.tag_name // empty')"
+            echo "上游最新 release：${REF:-（取不到，回退 main）}"
+            REF="${REF:-main}"
           fi
+
+          if [ -n "${PATCH_REV:-}" ]; then
+            TAG="${REF}-p${PATCH_REV}"
+          else
+            TAG="${REF}"
+          fi
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "待构建镜像 tag：${TAG}"
 
           TOKEN="$(curl -fsSL -u "${GITHUB_ACTOR}:${GH_TOKEN}" \
             "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO_LC}:pull" \
@@ -94,13 +107,28 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: 取本仓库的构建补丁文件
+        uses: actions/checkout@v4
+        with:
+          path: fork
+          fetch-depth: 1
+
       - name: 取上游源码
         uses: actions/checkout@v4
         with:
           repository: ${{ env.UPSTREAM }}
-          ref: ${{ needs.check.outputs.tag }}
+          ref: ${{ needs.check.outputs.ref }}
           path: src
           fetch-depth: 1
+
+      - name: 应用本地 Dockerfile 补丁（glibc 基础镜像）
+        run: |
+          if [ -f fork/ci/Dockerfile ]; then
+            cp fork/ci/Dockerfile src/Dockerfile
+            echo "==> 已用 fork/ci/Dockerfile 覆盖上游 Dockerfile（Debian slim / glibc）"
+          else
+            echo "==> 没有本地补丁，直接使用上游 Dockerfile"
+          fi
 
       - name: 记录上游 commit
         id: up
